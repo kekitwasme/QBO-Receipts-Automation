@@ -2,6 +2,8 @@
 // @name         QBO Receipt Automation - Stable Queue
 // @namespace    qbo-receipt-automation
 // @version      1.3
+// @updateURL    https://raw.githubusercontent.com/kekitwasme/QBO-Receipts-Automation/refs/heads/main/qbo-receipt-automation.js?token=GHSAT0AAAAAAD4CZMUMHWBKONGA7WPJ2YK22PXAUKA
+// @downloadURL  https://raw.githubusercontent.com/kekitwasme/QBO-Receipts-Automation/refs/heads/main/qbo-receipt-automation.js?token=GHSAT0AAAAAAD4CZMUMHWBKONGA7WPJ2YK22PXAUKA
 // @description  QBO receipt automation with stable review queue, auto-clear state, and flexible payee rules
 // @match        https://qbo.intuit.com/app/receipts*
 // @grant        none
