@@ -1,10 +1,8 @@
 // ==UserScript==
 // @name         QBO Receipt Automation - Stable Queue
 // @namespace    qbo-receipt-automation
-// @version      1.3
-// @updateURL    https://raw.githubusercontent.com/kekitwasme/QBO-Receipts-Automation/refs/heads/main/qbo-receipt-automation.js?token=GHSAT0AAAAAAD4CZMUMHWBKONGA7WPJ2YK22PXAUKA
-// @downloadURL  https://raw.githubusercontent.com/kekitwasme/QBO-Receipts-Automation/refs/heads/main/qbo-receipt-automation.js?token=GHSAT0AAAAAAD4CZMUMHWBKONGA7WPJ2YK22PXAUKA
-// @description  QBO receipt automation with stable review queue, auto-clear state, and flexible payee rules
+// @version      1.4
+// @description  QBO receipt automation with stable review queue, payee fill, auto-clear state, and flexible payee rules
 // @match        https://qbo.intuit.com/app/receipts*
 // @grant        none
 // ==/UserScript==
@@ -39,35 +37,17 @@
             gstFree: "GST free purchases",
         },
 
-        /*
-         * ============================================================
-         * PAYEE RULES
-         * ============================================================
-         *
-         * Add new payees or new types here.
-         *
-         * Each rule has:
-         * - type: label for logging/debugging
-         * - names: text to match against payee/description/memo/ref
-         * - apply: logic that returns what to fill
-         *
-         * To add a new supplier to an existing type:
-         * add the name inside the relevant names: [...] list.
-         *
-         * To add a totally new type:
-         * add a new rule object with its own apply() function.
-         */
-
         payeeRules: [
             {
                 type: "consumable_supplier",
                 names: [
                     "australian award packaging",
-                    "host"
+                    "host",
                 ],
-                apply: ({ amount, CONFIG }) => ({
+                apply: ({ amount, CONFIG, matchedName }) => ({
                     action: "fill",
                     type: "consumable_supplier",
+                    payee: matchedName,
                     bank: CONFIG.accounts.supplierAP,
                     category: CONFIG.categories.consumables,
                     taxType: CONFIG.tax.gst,
@@ -93,39 +73,45 @@
                     "daiwa food",
                     "damerc",
                 ],
-                apply: ({ tax, CONFIG }) => ({
+                apply: ({ tax, CONFIG, matchedName }) => ({
                     action: "fill",
                     type: "food_supplier",
+                    payee: matchedName,
                     bank: CONFIG.accounts.supplierAP,
                     category: CONFIG.categories.food,
                     taxType: tax ? CONFIG.tax.gst : CONFIG.tax.gstFree,
                     taxAmount: tax ? undefined : "0.00",
                 }),
             },
+
             {
                 type: "hardware_store",
                 names: ["bunnings"],
+                payee: "Bunnings",
                 apply: ({ amount, tax, CONFIG }) => ({
                     action: "fill",
                     type: "hardware_store",
                     bank: CONFIG.accounts.commbank,
                     category: CONFIG.categories.maintenance,
                     taxType: CONFIG.tax.gst,
-                    taxAmount: tax ? undefined : (amount / 11).toFixed(2)
-                })
+                    taxAmount: tax ? undefined : (amount / 11).toFixed(2),
+                }),
             },
+
             {
                 type: "maintenance_service_provider",
                 names: ["aussie filters"],
+                payee: "Aussie Filters",
                 apply: ({ amount, tax, CONFIG }) => ({
                     action: "fill",
                     type: "maintenance_service_provider",
                     bank: CONFIG.accounts.supplierAP,
                     category: CONFIG.categories.maintenance,
                     taxType: CONFIG.tax.gst,
-                    taxAmount: tax ? undefined : (amount / 11).toFixed(2)
-                })
+                    taxAmount: tax ? undefined : (amount / 11).toFixed(2),
+                }),
             },
+
             {
                 type: "supermarket",
                 names: [
@@ -145,11 +131,12 @@
                     "fresh",
                     "oriental",
                 ],
-                apply: ({ amount, tax, CONFIG }) => {
+                apply: ({ amount, tax, CONFIG, matchedName }) => {
                     if (!tax) {
                         return {
                             action: "fill",
                             type: "supermarket_no_tax",
+                            payee: matchedName,
                             bank: CONFIG.accounts.commbank,
                             category: CONFIG.categories.food,
                             taxType: CONFIG.tax.gstFree,
@@ -172,6 +159,7 @@
                     return {
                         action: "fill",
                         type: "supermarket_partial_tax",
+                        payee: matchedName,
                         bank: CONFIG.accounts.commbank,
                         category: CONFIG.categories.food,
                         taxType: CONFIG.tax.gst,
@@ -198,9 +186,10 @@
                     "eg",
                     "egeg",
                 ],
-                apply: ({ amount, tax, CONFIG }) => ({
+                apply: ({ amount, tax, CONFIG, matchedName }) => ({
                     action: "fill",
                     type: "vehicle",
+                    payee: matchedName,
                     bank: CONFIG.accounts.commbank,
                     category: CONFIG.categories.vehicle,
                     taxType: CONFIG.tax.gst,
@@ -332,6 +321,8 @@
     }
 
     function setNativeValue(el, value) {
+        if (!el) return;
+
         const proto = el instanceof HTMLTextAreaElement
             ? HTMLTextAreaElement.prototype
             : HTMLInputElement.prototype;
@@ -375,19 +366,35 @@
         setNativeValue(el, "");
         await sleep(150);
 
-        for (const char of value) {
+        for (const char of String(value)) {
             setNativeValue(el, el.value + char);
             await sleep(35);
         }
 
-        await sleep(50);
+        await sleep(300);
 
         key(el, "Enter");
-        await sleep(50);
+        await sleep(250);
 
         key(el, "Tab");
-        await sleep(100);
+        await sleep(200);
 
+        return true;
+    }
+
+    async function fillPayee(value, form) {
+        if (!value || !form.fields.payee) return true;
+
+        console.log("[QBO Bot] Filling payee:", value);
+
+        const okPayee = await typeAndMoveNext(form.fields.payee, value);
+
+        if (!okPayee) {
+            console.warn("[QBO Bot] Payee field failed/missing.");
+            return false;
+        }
+
+        await sleep(500);
         return true;
     }
 
@@ -504,9 +511,17 @@
     function findRule(searchText) {
         const text = normalise(searchText);
 
-        return CONFIG.payeeRules.find(rule =>
-            rule.names.some(name => text.includes(normalise(name)))
-        );
+        for (const rule of CONFIG.payeeRules) {
+            const matchedName = rule.names.find(name =>
+                text.includes(normalise(name))
+            );
+
+            if (matchedName) {
+                return { rule, matchedName };
+            }
+        }
+
+        return null;
     }
 
     function decide(values) {
@@ -522,21 +537,26 @@
             return { action: "skip", reason: "over $800", amount };
         }
 
-        const rule = findRule(searchText);
+        const match = findRule(searchText);
 
-        if (!rule) {
+        if (!match) {
             return { action: "skip", reason: "unknown supplier" };
         }
+
+        const { rule, matchedName } = match;
 
         const decision = rule.apply({
             amount,
             tax,
             values,
             CONFIG,
+            matchedName,
         });
 
         return {
             matchedRule: rule.type,
+            matchedName,
+            payee: rule.payee || decision.payee || matchedName,
             ...decision,
         };
     }
@@ -559,6 +579,12 @@
     }
 
     async function fillForm(decision, form) {
+        const okPayee = await fillPayee(decision.payee, form);
+
+        if (!okPayee) {
+            return false;
+        }
+
         const okBank = await typeAndMoveNext(form.fields.bank, decision.bank);
 
         if (!okBank) {
@@ -769,13 +795,12 @@ Failed: ${summary.failed}`;
                     }
 
                     console.warn("[QBO Bot] Fill failed. Fields found:", {
+                        payee: !!form.fields.payee,
                         bank: !!form.fields.bank,
                         category: !!form.fields.category,
                         taxType: !!form.fields.taxType,
                         taxAmount: !!form.fields.taxAmount,
-                        payee: form.values.payee,
-                        total: form.values.total,
-                        description: form.values.description,
+                        values: form.values,
                         decision,
                     });
 
