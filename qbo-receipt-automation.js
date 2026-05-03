@@ -63,6 +63,7 @@
                 type: "consumable_supplier",
                 names: [
                     "australian award packaging",
+                    "host"
                 ],
                 apply: ({ amount, CONFIG }) => ({
                     action: "fill",
