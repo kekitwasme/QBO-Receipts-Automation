@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         QBO Receipt Automation - Stable Queue
 // @namespace    qbo-receipt-automation
-// @version      1.2
-// @description  QBO receipt automation with stable review queue and auto-clear state
+// @version      1.3
+// @description  QBO receipt automation with stable review queue, auto-clear state, and flexible payee rules
 // @match        https://qbo.intuit.com/app/receipts*
 // @grant        none
 // ==/UserScript==
@@ -16,8 +16,8 @@
     const sleep = ms => new Promise(r => setTimeout(r, ms));
 
     const CONFIG = {
-        autoSave: true, // set true when ready
-        autoClearOnRun: true, // clears queue/skipped/processed counters before every new run
+        autoSave: true,
+        autoClearOnRun: true,
         maxAmount: 800,
 
         accounts: {
@@ -29,6 +29,7 @@
             food: "5111 Food & Beverage Costs",
             consumables: "5601 Small & Consumable Items",
             vehicle: "8500 Motor Vehicle Expenses",
+            maintenance: "6701 Repairs and Maintenance",
         },
 
         tax: {
@@ -36,60 +37,162 @@
             gstFree: "GST free purchases",
         },
 
-        consumableSuppliers: ["australian award packaging"],
+        /*
+         * ============================================================
+         * PAYEE RULES
+         * ============================================================
+         *
+         * Add new payees or new types here.
+         *
+         * Each rule has:
+         * - type: label for logging/debugging
+         * - names: text to match against payee/description/memo/ref
+         * - apply: logic that returns what to fill
+         *
+         * To add a new supplier to an existing type:
+         * add the name inside the relevant names: [...] list.
+         *
+         * To add a totally new type:
+         * add a new rule object with its own apply() function.
+         */
 
-        foodSuppliers: [
-            "jun pacific",
-            "perth seafoods",
-            "ntc wismettac australia",
-            "jfc australia",
-            "new west foods",
-            "new west foods wa",
-            "neighbours meat",
-            "nippon food supplies",
-            "china dragon trading",
-            "hydration hub",
-            "nice 'n' fresh",
-            "sparks coffee roasters",
-            "daiwa food",
-            "damerc"
+        payeeRules: [
+            {
+                type: "consumable_supplier",
+                names: [
+                    "australian award packaging",
+                ],
+                apply: ({ amount, CONFIG }) => ({
+                    action: "fill",
+                    type: "consumable_supplier",
+                    bank: CONFIG.accounts.supplierAP,
+                    category: CONFIG.categories.consumables,
+                    taxType: CONFIG.tax.gst,
+                    taxAmount: (amount / 11).toFixed(2),
+                }),
+            },
+
+            {
+                type: "food_supplier",
+                names: [
+                    "jun pacific",
+                    "perth seafoods",
+                    "ntc wismettac australia",
+                    "jfc australia",
+                    "new west foods",
+                    "new west foods wa",
+                    "neighbours meat",
+                    "nippon food supplies",
+                    "china dragon trading",
+                    "hydration hub",
+                    "nice 'n' fresh",
+                    "sparks coffee roasters",
+                    "daiwa food",
+                    "damerc",
+                ],
+                apply: ({ tax, CONFIG }) => ({
+                    action: "fill",
+                    type: "food_supplier",
+                    bank: CONFIG.accounts.supplierAP,
+                    category: CONFIG.categories.food,
+                    taxType: tax ? CONFIG.tax.gst : CONFIG.tax.gstFree,
+                    taxAmount: tax ? undefined : "0.00",
+                }),
+            },
+            {
+                type: "hardware_store",
+                names: ["bunnings"],
+                apply: ({ amount, tax, CONFIG }) => ({
+                    action: "fill",
+                    type: "hardware_store",
+                    bank: CONFIG.accounts.commbank,
+                    category: CONFIG.categories.maintenance,
+                    taxType: CONFIG.tax.gst,
+                    taxAmount: tax ? undefined : (amount / 11).toFixed(2)
+                })
+            },
+            {
+                type: "supermarket",
+                names: [
+                    "coles",
+                    "woolworths",
+                    "aldi",
+                    "spud shed",
+                    "spudshed",
+                    "iga",
+                    "costco",
+                    "np",
+                    "tony ale",
+                    "central oriental",
+                    "cockburn oriental",
+                    "scutti",
+                    "market",
+                    "fresh",
+                    "oriental",
+                ],
+                apply: ({ amount, tax, CONFIG }) => {
+                    if (!tax) {
+                        return {
+                            action: "fill",
+                            type: "supermarket_no_tax",
+                            bank: CONFIG.accounts.commbank,
+                            category: CONFIG.categories.food,
+                            taxType: CONFIG.tax.gstFree,
+                            taxAmount: "0.00",
+                        };
+                    }
+
+                    const expectedGst = amount / 11;
+
+                    if (tax >= expectedGst - 0.02) {
+                        return {
+                            action: "skip",
+                            reason: "full GST detected for supermarket",
+                            amount,
+                            tax,
+                            expectedGst,
+                        };
+                    }
+
+                    return {
+                        action: "fill",
+                        type: "supermarket_partial_tax",
+                        bank: CONFIG.accounts.commbank,
+                        category: CONFIG.categories.food,
+                        taxType: CONFIG.tax.gst,
+                    };
+                },
+            },
+
+            {
+                type: "vehicle",
+                names: [
+                    "fuel",
+                    "atlas fuel",
+                    "vibe petroleum",
+                    "thomile",
+                    "ampol",
+                    "caltex",
+                    "bp",
+                    "shell",
+                    "7-eleven",
+                    "mechanic",
+                    "tyre",
+                    "automotive",
+                    "workshop",
+                    "eg",
+                    "egeg",
+                ],
+                apply: ({ amount, tax, CONFIG }) => ({
+                    action: "fill",
+                    type: "vehicle",
+                    bank: CONFIG.accounts.commbank,
+                    category: CONFIG.categories.vehicle,
+                    taxType: CONFIG.tax.gst,
+                    taxAmount: tax ? undefined : (amount / 11).toFixed(2),
+                }),
+            },
         ],
-
-        supermarkets: [
-            "coles",
-            "woolworths",
-            "aldi",
-            "spud shed",
-            "spudshed",
-            "iga",
-            "costco",
-            "np",
-            "tony ale",
-            "central oriental",
-            "cockburn oriental",
-            "scutti",
-            "market",
-            "fresh",
-            "oriental"
-        ],
-
-        fuelVehicle: [
-            "fuel",
-            "atlas fuel",
-            "vibe petroleum",
-            "thomile",
-            "ampol",
-            "caltex",
-            "bp",
-            "shell",
-            "7-eleven",
-            "mechanic",
-            "tyre",
-            "automotive",
-            "workshop",
-            "eg",
-            "egeg"
-        ]
     };
 
     const STATE = {
@@ -121,8 +224,13 @@
         return String(v || "").replace(/\s+/g, " ").trim();
     }
 
+    function normalise(v) {
+        return cleanText(v).toLowerCase();
+    }
+
     function isVisible(el) {
         if (!el) return false;
+
         const rect = el.getBoundingClientRect();
         const style = window.getComputedStyle(el);
 
@@ -149,16 +257,16 @@
     function getLiveReviewRows() {
         return [...document.querySelectorAll("table tr")]
             .map(row => {
-            const reviewButton = getReviewButtonFromRow(row);
-            if (!reviewButton) return null;
+                const reviewButton = getReviewButtonFromRow(row);
+                if (!reviewButton) return null;
 
-            return {
-                row,
-                reviewButton,
-                key: getRowKeyFromRow(row),
-                top: row.getBoundingClientRect().top
-            };
-        })
+                return {
+                    row,
+                    reviewButton,
+                    key: getRowKeyFromRow(row),
+                    top: row.getBoundingClientRect().top,
+                };
+            })
             .filter(item => item && item.key)
             .sort((a, b) => a.top - b.top);
     }
@@ -166,19 +274,19 @@
     function buildReviewQueue() {
         STATE.reviewQueue = getLiveReviewRows().map(item => ({
             key: item.key,
-            text: cleanText(item.row.innerText)
+            text: cleanText(item.row.innerText),
         }));
 
         STATE.reviewIndex = 0;
 
         console.table(STATE.reviewQueue.map((item, i) => ({
             index: i + 1,
-            key: item.key
+            key: item.key,
         })));
     }
 
-    function findCurrentRowByKey(key) {
-        return getLiveReviewRows().find(item => item.key === key);
+    function findCurrentRowByKey(keyValue) {
+        return getLiveReviewRows().find(item => item.key === keyValue);
     }
 
     function getNextReviewRow() {
@@ -210,15 +318,15 @@
 
     function setNativeValue(el, value) {
         const proto = el instanceof HTMLTextAreaElement
-        ? HTMLTextAreaElement.prototype
-        : HTMLInputElement.prototype;
+            ? HTMLTextAreaElement.prototype
+            : HTMLInputElement.prototype;
 
         Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
 
         el.dispatchEvent(new InputEvent("input", {
             bubbles: true,
             inputType: "insertText",
-            data: value
+            data: value,
         }));
 
         el.dispatchEvent(new Event("change", { bubbles: true }));
@@ -231,14 +339,14 @@
             key: keyName,
             code: keyName,
             bubbles: true,
-            cancelable: true
+            cancelable: true,
         }));
 
         el.dispatchEvent(new KeyboardEvent("keyup", {
             key: keyName,
             code: keyName,
             bubbles: true,
-            cancelable: true
+            cancelable: true,
         }));
     }
 
@@ -284,7 +392,7 @@
                 cancelable: true,
                 view: window,
                 clientX: x,
-                clientY: y
+                clientY: y,
             }));
         }
 
@@ -294,9 +402,9 @@
 
     async function fillTaxType(value) {
         const taxInput =
-              document.querySelector('input[placeholder="Select tax rate"]') ||
-              [...document.querySelectorAll("input")]
-        .find(i => cleanText(i.value).includes("GST"));
+            document.querySelector('input[placeholder="Select tax rate"]') ||
+            [...document.querySelectorAll("input")]
+                .find(i => cleanText(i.value).includes("GST"));
 
         if (!taxInput) {
             console.warn("[QBO Bot] Tax input not found");
@@ -308,20 +416,20 @@
         await sleep(200);
 
         const viewChoices = [...document.querySelectorAll("button")]
-        .find(b => cleanText(b.innerText) === "View Choices");
+            .find(b => cleanText(b.innerText) === "View Choices");
 
         if (viewChoices) {
             viewChoices.click();
             await sleep(200);
         }
 
-        const wanted = cleanText(value).toLowerCase();
+        const wanted = normalise(value);
 
         const label = [...document.querySelectorAll(".menu-item-label")]
-        .find(el => {
-            const text = cleanText(el.innerText).toLowerCase();
-            return text === wanted || text.includes(wanted) || wanted.includes(text);
-        });
+            .find(el => {
+                const text = normalise(el.innerText);
+                return text === wanted || text.includes(wanted) || wanted.includes(text);
+            });
 
         if (!label) {
             console.warn("[QBO Bot] Tax menu label not found:", value);
@@ -329,11 +437,11 @@
         }
 
         const clickable =
-              label.closest('[role="menuitem"]') ||
-              label.closest("button") ||
-              label.closest("li") ||
-              label.parentElement ||
-              label;
+            label.closest('[role="menuitem"]') ||
+            label.closest("button") ||
+            label.closest("li") ||
+            label.parentElement ||
+            label;
 
         await realClick(clickable);
         await sleep(200);
@@ -349,11 +457,6 @@
         return Number.isFinite(n) ? n : null;
     }
 
-    function matchesAny(text, list) {
-        const t = String(text || "").toLowerCase();
-        return list.some(x => t.includes(x));
-    }
-
     function readForm() {
         const fields = {
             payee: document.querySelector('input[aria-label="Select a payee (optional)"]'),
@@ -364,7 +467,7 @@
             description: document.querySelector('input[placeholder="Enter a description"]'),
             category: document.querySelector('input[aria-label="Select a category"]'),
             ref: document.querySelector('input[placeholder="Enter a Ref no."]'),
-            memo: document.querySelector('textarea[placeholder="Add note (optional)"]')
+            memo: document.querySelector('textarea[placeholder="Add note (optional)"]'),
         };
 
         const values = Object.fromEntries(
@@ -374,101 +477,62 @@
         return { fields, values };
     }
 
-    function decide(values) {
-        const searchText = [
+    function buildSearchText(values) {
+        return [
             values.payee,
             values.description,
             values.memo,
-            values.ref
+            values.ref,
         ].join(" ");
+    }
 
+    function findRule(searchText) {
+        const text = normalise(searchText);
+
+        return CONFIG.payeeRules.find(rule =>
+            rule.names.some(name => text.includes(normalise(name)))
+        );
+    }
+
+    function decide(values) {
+        const searchText = buildSearchText(values);
         const amount = moneyToNumber(values.total);
         const tax = moneyToNumber(values.taxAmount);
 
-        if (!amount) return { action: "skip", reason: "empty amount" };
-        if (amount > CONFIG.maxAmount) return { action: "skip", reason: "over $800", amount };
-
-        if (matchesAny(searchText, CONFIG.consumableSuppliers)) {
-            const gstAmount = amount / 11;
-
-            return {
-                action: "fill",
-                type: "consumable_supplier",
-                bank: CONFIG.accounts.supplierAP,
-                category: CONFIG.categories.consumables,
-                taxType: CONFIG.tax.gst,
-                // 🔥 force GST amount
-                taxAmount: gstAmount.toFixed(2)
-            };
+        if (!amount) {
+            return { action: "skip", reason: "empty amount" };
         }
 
-        if (matchesAny(searchText, CONFIG.fuelVehicle)) {
-            const gstAmount = amount / 11;
-
-            return {
-                action: "fill",
-                type: "vehicle",
-                bank: CONFIG.accounts.commbank,
-                category: CONFIG.categories.vehicle,
-                taxType: CONFIG.tax.gst,
-                taxAmount: tax ? undefined : gstAmount.toFixed(2)
-            };
+        if (amount > CONFIG.maxAmount) {
+            return { action: "skip", reason: "over $800", amount };
         }
 
-        if (matchesAny(searchText, CONFIG.foodSuppliers)) {
-            return {
-                action: "fill",
-                type: "food_supplier",
-                bank: CONFIG.accounts.supplierAP,
-                category: CONFIG.categories.food,
-                taxType: tax ? CONFIG.tax.gst : CONFIG.tax.gstFree,
-                taxAmount: tax ? undefined : "0.00"
-            };
+        const rule = findRule(searchText);
+
+        if (!rule) {
+            return { action: "skip", reason: "unknown supplier" };
         }
 
-        if (matchesAny(searchText, CONFIG.supermarkets)) {
-            if (!tax) {
-                return {
-                    action: "fill",
-                    type: "supermarket_no_tax",
-                    bank: CONFIG.accounts.commbank,
-                    category: CONFIG.categories.food,
-                    taxType: CONFIG.tax.gstFree,
-                    taxAmount: "0.00"
-                };
-            }
+        const decision = rule.apply({
+            amount,
+            tax,
+            values,
+            CONFIG,
+        });
 
-            const expectedGst = amount / 11;
-
-            if (tax >= expectedGst - 0.02) {
-                return {
-                    action: "skip",
-                    reason: "full GST detected for supermarket",
-                    amount,
-                    tax,
-                    expectedGst
-                };
-            }
-
-            return {
-                action: "fill",
-                type: "supermarket_partial_tax",
-                bank: CONFIG.accounts.commbank,
-                category: CONFIG.categories.food,
-                taxType: CONFIG.tax.gst
-            };
-        }
-
-        return { action: "skip", reason: "unknown supplier" };
+        return {
+            matchedRule: rule.type,
+            ...decision,
+        };
     }
 
     async function triggerValidation(form) {
         const lastField =
-              form.fields.memo ||
-              form.fields.ref ||
-              form.fields.taxAmount ||
-              form.fields.category ||
-              form.fields.description;
+            form.fields.memo ||
+            form.fields.ref ||
+            form.fields.taxAmount ||
+            form.fields.category ||
+            form.fields.description;
 
         if (!lastField) return;
 
@@ -481,12 +545,14 @@
 
     async function fillForm(decision, form) {
         const okBank = await typeAndMoveNext(form.fields.bank, decision.bank);
+
         if (!okBank) {
             console.warn("[QBO Bot] Bank field failed/missing.");
             return false;
         }
 
         const okCategory = await typeAndMoveNext(form.fields.category, decision.category);
+
         if (!okCategory) {
             console.warn("[QBO Bot] Category field failed/missing.");
             return false;
@@ -494,6 +560,7 @@
 
         if (decision.taxType) {
             const okTax = await fillTaxType(decision.taxType);
+
             if (!okTax) {
                 console.warn("[QBO Bot] Tax type failed.");
                 return false;
@@ -503,7 +570,9 @@
         if (decision.taxAmount !== undefined && form.fields.taxAmount) {
             form.fields.taxAmount.focus();
             await sleep(150);
+
             setNativeValue(form.fields.taxAmount, decision.taxAmount);
+
             await sleep(300);
             key(form.fields.taxAmount, "Tab");
             await sleep(500);
@@ -531,7 +600,7 @@
 
         console.log("[QBO Bot] Opening live matched row:", {
             index: STATE.reviewIndex,
-            key: STATE.currentRowKey
+            key: STATE.currentRowKey,
         });
 
         next.reviewButton.scrollIntoView({ block: "center" });
@@ -545,7 +614,7 @@
 
     async function closeFormWithCancel() {
         const cancelBtn = [...document.querySelectorAll("button")]
-        .find(b => cleanText(b.innerText) === "Cancel");
+            .find(b => cleanText(b.innerText) === "Cancel");
 
         if (cancelBtn) {
             cancelBtn.click();
@@ -561,7 +630,6 @@
             await sleep(200);
         }
 
-        // hard wait AFTER form is closed
         await sleep(500);
     }
 
@@ -571,51 +639,55 @@ Processed: ${summary.processed}
 Skipped: ${summary.skipped}
 Failed: ${summary.failed}`;
 
-        // --- In-page toast (always works) ---
         let toast = document.getElementById("qbo-finish-toast");
+
         if (!toast) {
             toast = document.createElement("div");
             toast.id = "qbo-finish-toast";
             toast.style.cssText = `
-      position: fixed;
-      right: 20px;
-      top: 220px;
-      z-index: 999999;
-      background: #1e1e1e;
-      color: #fff;
-      padding: 12px 14px;
-      border-radius: 8px;
-      box-shadow: 0 2px 12px rgba(0,0,0,.3);
-      font-family: Arial, sans-serif;
-      font-size: 13px;
-      white-space: pre-line;
-    `;
+                position: fixed;
+                right: 20px;
+                top: 220px;
+                z-index: 999999;
+                background: #1e1e1e;
+                color: #fff;
+                padding: 12px 14px;
+                border-radius: 8px;
+                box-shadow: 0 2px 12px rgba(0,0,0,.3);
+                font-family: Arial, sans-serif;
+                font-size: 13px;
+                white-space: pre-line;
+            `;
             document.body.appendChild(toast);
         }
+
         toast.textContent = text;
         setTimeout(() => toast.remove(), 3000);
 
-        // --- Sound (short beep) ---
         try {
             const ctx = new (window.AudioContext || window.webkitAudioContext)();
             const osc = ctx.createOscillator();
             const gain = ctx.createGain();
+
             osc.connect(gain);
             gain.connect(ctx.destination);
+
             osc.type = "sine";
             osc.frequency.value = 880;
             osc.start();
+
             gain.gain.setValueAtTime(0.15, ctx.currentTime);
             gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
+
             osc.stop(ctx.currentTime + 0.5);
         } catch (e) {}
 
-        // --- Browser notification (may ask permission) ---
         if ("Notification" in window) {
             if (Notification.permission === "granted") {
                 new Notification("QBO Bot Finished", { body: text });
             } else if (Notification.permission !== "denied") {
                 const perm = await Notification.requestPermission();
+
                 if (perm === "granted") {
                     new Notification("QBO Bot Finished", { body: text });
                 }
@@ -689,7 +761,7 @@ Failed: ${summary.failed}`;
                         payee: form.values.payee,
                         total: form.values.total,
                         description: form.values.description,
-                        decision
+                        decision,
                     });
 
                     await closeFormWithCancel();
@@ -743,13 +815,13 @@ Failed: ${summary.failed}`;
                 queuedRows: STATE.reviewQueue.length,
                 reviewIndex: STATE.reviewIndex,
                 autoSave: CONFIG.autoSave,
-                autoClearOnRun: CONFIG.autoClearOnRun
+                autoClearOnRun: CONFIG.autoClearOnRun,
             });
 
             await notifyRunFinished({
                 processed: STATE.processed,
                 skipped: STATE.skipped,
-                failed: STATE.failed
+                failed: STATE.failed,
             });
         }
     }
@@ -760,18 +832,18 @@ Failed: ${summary.failed}`;
         const panel = document.createElement("div");
         panel.id = "qbo-receipt-bot-panel";
         panel.style.cssText = `
-      position: fixed;
-      right: 20px;
-      top: 20px;
-      z-index: 999999;
-      background: white;
-      border: 1px solid #ccc;
-      border-radius: 8px;
-      padding: 10px;
-      box-shadow: 0 2px 12px rgba(0,0,0,.2);
-      font-family: Arial, sans-serif;
-      font-size: 13px;
-    `;
+            position: fixed;
+            right: 20px;
+            top: 20px;
+            z-index: 999999;
+            background: white;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            padding: 10px;
+            box-shadow: 0 2px 12px rgba(0,0,0,.2);
+            font-family: Arial, sans-serif;
+            font-size: 13px;
+        `;
 
         const runBtn = document.createElement("button");
         runBtn.textContent = "Run QBO Bot";
@@ -787,6 +859,11 @@ Failed: ${summary.failed}`;
 
         runBtn.onclick = () => runQboReceiptAutomation();
 
+        stopBtn.onclick = () => {
+            STATE.running = false;
+            console.warn("[QBO Bot] Stop requested.");
+        };
+
         clearBtn.onclick = () => {
             if (STATE.running) {
                 console.warn("[QBO Bot] Cannot clear while running. Stop first.");
@@ -794,11 +871,6 @@ Failed: ${summary.failed}`;
             }
 
             clearState();
-        };
-
-        stopBtn.onclick = () => {
-            STATE.running = false;
-            console.warn("[QBO Bot] Stop requested.");
         };
 
         panel.appendChild(runBtn);
@@ -833,6 +905,8 @@ Failed: ${summary.failed}`;
         },
         state: STATE,
         config: CONFIG,
+        decide,
+        findRule,
     };
 
     console.log("[QBO Bot] Loaded. Use floating button or run QBO_RECEIPT_BOT.run()");
