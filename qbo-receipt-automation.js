@@ -114,6 +114,18 @@
                 })
             },
             {
+                type: "maintenance_service_provider",
+                names: ["aussie filters"],
+                apply: ({ amount, tax, CONFIG }) => ({
+                    action: "fill",
+                    type: "maintenance_service_provider",
+                    bank: CONFIG.accounts.supplierAP,
+                    category: CONFIG.categories.maintenance,
+                    taxType: CONFIG.tax.gst,
+                    taxAmount: tax ? undefined : (amount / 11).toFixed(2)
+                })
+            },
+            {
                 type: "supermarket",
                 names: [
                     "coles",
