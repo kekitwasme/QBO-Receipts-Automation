@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         QBO Receipt Automation - Stable Queue
 // @namespace    qbo-receipt-automation
-// @version      1.4
-// @description  QBO receipt automation with stable review queue, payee fill, auto-clear state, and flexible payee rules
+// @version      1.5
+// @description  QBO receipt automation with stable review queue, payee aliases, auto-clear state, and run completion notification
 // @match        https://qbo.intuit.com/app/receipts*
 // @grant        none
 // ==/UserScript==
@@ -44,10 +44,10 @@
                     "australian award packaging",
                     "host",
                 ],
-                apply: ({ amount, CONFIG, matchedName }) => ({
+                apply: ({ amount, CONFIG, payeeName }) => ({
                     action: "fill",
                     type: "consumable_supplier",
-                    payee: matchedName,
+                    payee: payeeName,
                     bank: CONFIG.accounts.supplierAP,
                     category: CONFIG.categories.consumables,
                     taxType: CONFIG.tax.gst,
@@ -73,10 +73,10 @@
                     "daiwa food",
                     "damerc",
                 ],
-                apply: ({ tax, CONFIG, matchedName }) => ({
+                apply: ({ tax, CONFIG, payeeName }) => ({
                     action: "fill",
                     type: "food_supplier",
-                    payee: matchedName,
+                    payee: payeeName,
                     bank: CONFIG.accounts.supplierAP,
                     category: CONFIG.categories.food,
                     taxType: tax ? CONFIG.tax.gst : CONFIG.tax.gstFree,
@@ -118,8 +118,8 @@
                     "coles",
                     "woolworths",
                     "aldi",
-                    "spud shed",
-                    "spudshed",
+                    { match: "spud shed", payee: "spud shed" },
+                    { match: "spudshed", payee: "spud shed" },
                     "iga",
                     "costco",
                     "np",
@@ -131,12 +131,12 @@
                     "fresh",
                     "oriental",
                 ],
-                apply: ({ amount, tax, CONFIG, matchedName }) => {
+                apply: ({ amount, tax, CONFIG, payeeName }) => {
                     if (!tax) {
                         return {
                             action: "fill",
                             type: "supermarket_no_tax",
-                            payee: matchedName,
+                            payee: payeeName,
                             bank: CONFIG.accounts.commbank,
                             category: CONFIG.categories.food,
                             taxType: CONFIG.tax.gstFree,
@@ -159,7 +159,7 @@
                     return {
                         action: "fill",
                         type: "supermarket_partial_tax",
-                        payee: matchedName,
+                        payee: payeeName,
                         bank: CONFIG.accounts.commbank,
                         category: CONFIG.categories.food,
                         taxType: CONFIG.tax.gst,
@@ -186,10 +186,10 @@
                     "eg",
                     "egeg",
                 ],
-                apply: ({ amount, tax, CONFIG, matchedName }) => ({
+                apply: ({ amount, tax, CONFIG, payeeName }) => ({
                     action: "fill",
                     type: "vehicle",
-                    payee: matchedName,
+                    payee: payeeName,
                     bank: CONFIG.accounts.commbank,
                     category: CONFIG.categories.vehicle,
                     taxType: CONFIG.tax.gst,
@@ -220,7 +220,6 @@
         STATE.processed = 0;
         STATE.skipped = 0;
         STATE.failed = 0;
-
         console.warn("[QBO Bot] State fully cleared.");
     }
 
@@ -230,6 +229,14 @@
 
     function normalise(v) {
         return cleanText(v).toLowerCase();
+    }
+
+    function getRuleNameValue(item) {
+        return typeof item === "string" ? item : item.match;
+    }
+
+    function getRulePayeeValue(item) {
+        return typeof item === "string" ? item : item.payee;
     }
 
     function isVisible(el) {
@@ -282,7 +289,6 @@
         }));
 
         STATE.reviewIndex = 0;
-
         console.table(STATE.reviewQueue.map((item, i) => ({
             index: i + 1,
             key: item.key,
@@ -294,9 +300,7 @@
     }
 
     function getNextReviewRow() {
-        if (!STATE.reviewQueue.length) {
-            buildReviewQueue();
-        }
+        if (!STATE.reviewQueue.length) buildReviewQueue();
 
         while (STATE.reviewIndex < STATE.reviewQueue.length) {
             const queued = STATE.reviewQueue[STATE.reviewIndex];
@@ -372,29 +376,11 @@
         }
 
         await sleep(300);
-
         key(el, "Enter");
         await sleep(250);
-
         key(el, "Tab");
         await sleep(200);
 
-        return true;
-    }
-
-    async function fillPayee(value, form) {
-        if (!value || !form.fields.payee) return true;
-
-        console.log("[QBO Bot] Filling payee:", value);
-
-        const okPayee = await typeAndMoveNext(form.fields.payee, value);
-
-        if (!okPayee) {
-            console.warn("[QBO Bot] Payee field failed/missing.");
-            return false;
-        }
-
-        await sleep(500);
         return true;
     }
 
@@ -419,6 +405,62 @@
         }
 
         await sleep(100);
+        return true;
+    }
+
+    async function fillPayee(value, form) {
+        if (!value || !form.fields.payee) return true;
+
+        console.log("[QBO Bot] Filling payee:", value);
+
+        const input = form.fields.payee;
+        input.scrollIntoView({ block: "center" });
+        input.focus();
+        await sleep(200);
+
+        setNativeValue(input, "");
+        await sleep(200);
+
+        setNativeValue(input, value);
+        await sleep(900);
+
+        const wanted = normalise(value);
+
+        const option = [...document.querySelectorAll(
+            '[role="option"], [role="menuitem"], .menu-item-label, li, button'
+        )].find(el => {
+            const text = normalise(el.innerText || el.textContent);
+            if (!text) return false;
+
+            if (
+                text.includes("add") ||
+                text.includes("create") ||
+                text.includes("new")
+            ) {
+                return false;
+            }
+
+            return text === wanted || text.includes(wanted) || wanted.includes(text);
+        });
+
+        if (!option) {
+            console.warn("[QBO Bot] Existing payee option not found:", value);
+            return false;
+        }
+
+        const clickable =
+            option.closest('[role="option"]') ||
+            option.closest('[role="menuitem"]') ||
+            option.closest("button") ||
+            option.closest("li") ||
+            option;
+
+        await realClick(clickable);
+        await sleep(500);
+
+        key(input, "Tab");
+        await sleep(300);
+
         return true;
     }
 
@@ -512,12 +554,16 @@
         const text = normalise(searchText);
 
         for (const rule of CONFIG.payeeRules) {
-            const matchedName = rule.names.find(name =>
-                text.includes(normalise(name))
-            );
+            for (const item of rule.names) {
+                const matchText = getRuleNameValue(item);
 
-            if (matchedName) {
-                return { rule, matchedName };
+                if (text.includes(normalise(matchText))) {
+                    return {
+                        rule,
+                        matchedName: matchText,
+                        payeeName: getRulePayeeValue(item),
+                    };
+                }
             }
         }
 
@@ -543,7 +589,7 @@
             return { action: "skip", reason: "unknown supplier" };
         }
 
-        const { rule, matchedName } = match;
+        const { rule, matchedName, payeeName } = match;
 
         const decision = rule.apply({
             amount,
@@ -551,12 +597,13 @@
             values,
             CONFIG,
             matchedName,
+            payeeName,
         });
 
         return {
             matchedRule: rule.type,
             matchedName,
-            payee: rule.payee || decision.payee || matchedName,
+            payee: rule.payee || decision.payee || payeeName || matchedName,
             ...decision,
         };
     }
@@ -573,7 +620,6 @@
 
         lastField.focus();
         await sleep(300);
-
         key(lastField, "Tab");
         await sleep(1000);
     }
@@ -582,6 +628,7 @@
         const okPayee = await fillPayee(decision.payee, form);
 
         if (!okPayee) {
+            console.warn("[QBO Bot] Payee field failed/missing.");
             return false;
         }
 
