@@ -653,13 +653,10 @@
             return false;
         }
 
-        // Fill description with matched payee name (append to existing if present)
+        // Fill description with matched payee name (replace existing)
         if (decision.description && form.fields.description) {
             const descField = form.fields.description;
-            const existing = cleanText(descField.value);
-            const descValue = existing
-                ? `${existing} \u2014 ${decision.description}`
-                : decision.description;
+            const descValue = decision.description;
             descField.scrollIntoView({ block: "center" });
             descField.focus();
             await sleep(150);
