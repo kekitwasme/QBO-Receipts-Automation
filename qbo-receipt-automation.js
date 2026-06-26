@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         QBO Receipt Automation - Stable Queue
 // @namespace    qbo-receipt-automation
-// @version      1.5
-// @description  QBO receipt automation with stable review queue, payee aliases, auto-clear state, and run completion notification
+// @version      1.6
+// @description  QBO receipt automation with stable review queue, payee aliases, auto-clear state, draggable control panel, payee-to-description, and run completion notification
 // @match        https://qbo.intuit.com/app/receipts*
 // @grant        none
 // ==/UserScript==
@@ -48,6 +48,7 @@
                     action: "fill",
                     type: "consumable_supplier",
                     payee: payeeName,
+                    description: payeeName,
                     bank: CONFIG.accounts.supplierAP,
                     category: CONFIG.categories.consumables,
                     taxType: CONFIG.tax.gst,
@@ -77,6 +78,7 @@
                     action: "fill",
                     type: "food_supplier",
                     payee: payeeName,
+                    description: payeeName,
                     bank: CONFIG.accounts.supplierAP,
                     category: CONFIG.categories.food,
                     taxType: tax ? CONFIG.tax.gst : CONFIG.tax.gstFree,
@@ -91,6 +93,7 @@
                 apply: ({ amount, tax, CONFIG }) => ({
                     action: "fill",
                     type: "hardware_store",
+                    description: "Bunnings",
                     bank: CONFIG.accounts.commbank,
                     category: CONFIG.categories.maintenance,
                     taxType: CONFIG.tax.gst,
@@ -105,6 +108,7 @@
                 apply: ({ amount, tax, CONFIG }) => ({
                     action: "fill",
                     type: "maintenance_service_provider",
+                    description: "Aussie Filters",
                     bank: CONFIG.accounts.supplierAP,
                     category: CONFIG.categories.maintenance,
                     taxType: CONFIG.tax.gst,
@@ -137,6 +141,7 @@
                             action: "fill",
                             type: "supermarket_no_tax",
                             payee: payeeName,
+                            description: payeeName,
                             bank: CONFIG.accounts.commbank,
                             category: CONFIG.categories.food,
                             taxType: CONFIG.tax.gstFree,
@@ -160,6 +165,7 @@
                         action: "fill",
                         type: "supermarket_partial_tax",
                         payee: payeeName,
+                        description: payeeName,
                         bank: CONFIG.accounts.commbank,
                         category: CONFIG.categories.food,
                         taxType: CONFIG.tax.gst,
@@ -190,6 +196,7 @@
                     action: "fill",
                     type: "vehicle",
                     payee: payeeName,
+                    description: payeeName,
                     bank: CONFIG.accounts.commbank,
                     category: CONFIG.categories.vehicle,
                     taxType: CONFIG.tax.gst,
@@ -646,6 +653,25 @@
             return false;
         }
 
+        // Fill description with matched payee name (append to existing if present)
+        if (decision.description && form.fields.description) {
+            const descField = form.fields.description;
+            const existing = cleanText(descField.value);
+            const descValue = existing
+                ? `${existing} \u2014 ${decision.description}`
+                : decision.description;
+            descField.scrollIntoView({ block: "center" });
+            descField.focus();
+            await sleep(150);
+            setNativeValue(descField, "");
+            await sleep(100);
+            setNativeValue(descField, descValue);
+            await sleep(200);
+            key(descField, "Tab");
+            await sleep(200);
+            console.log("[QBO Bot] Description filled:", descValue);
+        }
+
         if (decision.taxType) {
             const okTax = await fillTaxType(decision.taxType);
 
@@ -916,29 +942,125 @@ Failed: ${summary.failed}`;
     function addControlPanel() {
         if (document.getElementById("qbo-receipt-bot-panel")) return;
 
+        const PANEL_POS_KEY = "qbo_bot_panel_pos";
+
         const panel = document.createElement("div");
         panel.id = "qbo-receipt-bot-panel";
         panel.style.cssText = `
             position: fixed;
-            right: 20px;
-            top: 20px;
             z-index: 999999;
             background: white;
             border: 1px solid #ccc;
             border-radius: 8px;
-            padding: 10px;
+            padding: 0;
             box-shadow: 0 2px 12px rgba(0,0,0,.2);
             font-family: Arial, sans-serif;
             font-size: 13px;
+            user-select: none;
         `;
 
+        // --- Draggable header ---
+        const header = document.createElement("div");
+        header.textContent = "QBO Bot";
+        header.style.cssText = `
+            padding: 6px 12px;
+            background: #2c2c2c;
+            color: #fff;
+            font-weight: bold;
+            border-radius: 8px 8px 0 0;
+            cursor: grab;
+            font-size: 13px;
+        `;
+
+        const body = document.createElement("div");
+        body.style.cssText = "padding: 10px; display: flex; flex-wrap: wrap; gap: 6px;";
+
+        panel.appendChild(header);
+        panel.appendChild(body);
+
+        // --- Restore saved position or default to top-right ---
+        function clampPos(x, y) {
+            const maxX = window.innerWidth - panel.offsetWidth;
+            const maxY = window.innerHeight - panel.offsetHeight;
+            return {
+                x: Math.max(0, Math.min(x, maxX)),
+                y: Math.max(0, Math.min(y, maxY)),
+            };
+        }
+
+        function getSavedPos() {
+            try {
+                const raw = localStorage.getItem(PANEL_POS_KEY);
+                if (!raw) return null;
+                const parsed = JSON.parse(raw);
+                if (
+                    typeof parsed.x === "number" &&
+                    typeof parsed.y === "number"
+                ) {
+                    return parsed;
+                }
+            } catch (e) {
+                console.warn("[QBO Bot] Failed to parse saved panel pos:", e);
+            }
+            return null;
+        }
+
+        function applyPos(x, y) {
+            const clamped = clampPos(x, y);
+            panel.style.left = clamped.x + "px";
+            panel.style.top = clamped.y + "px";
+        }
+
+        function savePos(x, y) {
+            try {
+                localStorage.setItem(
+                    PANEL_POS_KEY,
+                    JSON.stringify({ x, y })
+                );
+            } catch (e) {
+                console.warn("[QBO Bot] Failed to save panel pos:", e);
+            }
+        }
+
+        // --- Drag logic ---
+        let dragging = false;
+        let dragOffsetX = 0;
+        let dragOffsetY = 0;
+
+        header.addEventListener("mousedown", (e) => {
+            // Only start drag on left-click
+            if (e.button !== 0) return;
+            dragging = true;
+            header.style.cursor = "grabbing";
+            const rect = panel.getBoundingClientRect();
+            dragOffsetX = e.clientX - rect.left;
+            dragOffsetY = e.clientY - rect.top;
+            e.preventDefault();
+        });
+
+        document.addEventListener("mousemove", (e) => {
+            if (!dragging) return;
+            const newX = e.clientX - dragOffsetX;
+            const newY = e.clientY - dragOffsetY;
+            applyPos(newX, newY);
+        });
+
+        document.addEventListener("mouseup", () => {
+            if (!dragging) return;
+            dragging = false;
+            header.style.cursor = "grab";
+            const rect = panel.getBoundingClientRect();
+            savePos(rect.left, rect.top);
+        });
+
+        // --- Buttons ---
         const runBtn = document.createElement("button");
         runBtn.textContent = "Run QBO Bot";
-        runBtn.style.cssText = "padding:8px 12px; cursor:pointer; margin-right:6px;";
+        runBtn.style.cssText = "padding:8px 12px; cursor:pointer;";
 
         const stopBtn = document.createElement("button");
         stopBtn.textContent = "Stop";
-        stopBtn.style.cssText = "padding:8px 12px; cursor:pointer; margin-right:6px;";
+        stopBtn.style.cssText = "padding:8px 12px; cursor:pointer;";
 
         const clearBtn = document.createElement("button");
         clearBtn.textContent = "Clear State";
@@ -960,10 +1082,25 @@ Failed: ${summary.failed}`;
             clearState();
         };
 
-        panel.appendChild(runBtn);
-        panel.appendChild(stopBtn);
-        panel.appendChild(clearBtn);
+        body.appendChild(runBtn);
+        body.appendChild(stopBtn);
+        body.appendChild(clearBtn);
         document.body.appendChild(panel);
+
+        // --- Apply initial position ---
+        const saved = getSavedPos();
+        if (saved) {
+            applyPos(saved.x, saved.y);
+        } else {
+            // Default: top-right with 20px margin
+            applyPos(window.innerWidth - panel.offsetWidth - 20, 20);
+        }
+
+        // Re-clamp on resize
+        window.addEventListener("resize", () => {
+            const rect = panel.getBoundingClientRect();
+            applyPos(rect.left, rect.top);
+        });
     }
 
     function waitForBodyThenAddPanel() {
