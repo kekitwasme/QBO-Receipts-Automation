@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         QBO Receipt Automation - Stable Queue
 // @namespace    qbo-receipt-automation
-// @version      1.6
+// @version      1.7
 // @description  QBO receipt automation with stable review queue, payee aliases, auto-clear state, draggable control panel, payee-to-description, and run completion notification
 // @match        https://qbo.intuit.com/app/receipts*
 // @grant        none
@@ -606,12 +606,17 @@
             matchedName,
             payeeName,
         });
+        const matchedPayeeName = rule.payee || payeeName || matchedName;
+        const payee = rule.payee || decision.payee || matchedPayeeName;
 
         return {
             matchedRule: rule.type,
             matchedName,
-            payee: rule.payee || decision.payee || payeeName || matchedName,
             ...decision,
+            payee,
+            description: decision.action === "fill"
+                ? matchedPayeeName
+                : decision.description,
         };
     }
 

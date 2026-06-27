@@ -1,4 +1,12 @@
-# Changes Summary — v1.5 → v1.6
+# Changes Summary
+
+## v1.6 → v1.7
+
+- Description filling now uses the matched rule payee name for `"fill"` decisions.
+- Centralized the description value in `decide()` so rule callbacks cannot accidentally use the pre-filled QBO payee value for description text.
+- Updated the userscript header version to `1.7`.
+
+## v1.5 → v1.6
 
 ## 1. README.md (new file)
 

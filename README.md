@@ -168,15 +168,15 @@ It must return a decision object:
 | `category`   | If fill  | Category name to select                           |
 | `taxType`    | If fill  | Tax code name                                    |
 | `taxAmount`  | Optional | Override tax amount string                       |
-| `description`| Optional | Text to write to description field (added to existing) |
+| `description`| Optional | Text to write to description field for skip decisions only; fill decisions use the matched payee name |
 | `reason`     | If skip  | Human-readable reason for skipping               |
 
 ### Payee-to-Description Feature
 
-When a payee rule matches and the action is `"fill"`, the matched payee name is written to the description field:
+When a payee rule matches and the action is `"fill"`, the matched payee name from the winning rule is written to the description field:
 
-- If the description field is empty, the payee name is inserted.
-- If the description already has text (e.g., from QBO OCR), the payee name is appended: `existing — payeeName`
+- The description field is replaced with the matched payee name.
+- The value comes from the matching rule entry or rule-level `payee`, not from the pre-filled QBO payee field.
 
 ## Troubleshooting
 
