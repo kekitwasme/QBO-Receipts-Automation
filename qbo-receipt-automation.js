@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         QBO Receipt Automation - Stable Queue
 // @namespace    qbo-receipt-automation
-// @version      1.7
+// @version      1.12
 // @description  QBO receipt automation with stable review queue, payee aliases, auto-clear state, draggable control panel, payee-to-description, and run completion notification
 // @match        https://qbo.intuit.com/app/receipts*
 // @grant        none
@@ -57,6 +57,22 @@
             },
 
             {
+                type: "china_dragon_trading",
+                names: ["china dragon trading"],
+                apply: ({ tax, CONFIG, payeeName }) => ({
+                    action: "fill",
+                    type: "china_dragon_trading",
+                    payee: payeeName,
+                    description: payeeName,
+                    bank: CONFIG.accounts.supplierAP,
+                    category: CONFIG.categories.food,
+                    taxType: tax ? CONFIG.tax.gst : CONFIG.tax.gstFree,
+                    taxAmount: tax ? undefined : "0.00",
+                    submitAction: "createExpense",
+                }),
+            },
+
+            {
                 type: "food_supplier",
                 names: [
                     "jun pacific",
@@ -67,7 +83,6 @@
                     "new west foods wa",
                     "neighbours meat",
                     "nippon food supplies",
-                    "china dragon trading",
                     "hydration hub",
                     "nice 'n' fresh",
                     "sparks coffee roasters",
@@ -218,6 +233,9 @@
         failed: 0,
     };
 
+    const DIRECT_REVIEW_ROW_ACTION = "Review";
+    const MATCH_ROW_ACTION = "Match";
+
     function clearState() {
         STATE.reviewQueue = [];
         STATE.reviewIndex = 0;
@@ -267,20 +285,35 @@
             .join(" | ");
     }
 
-    function getReviewButtonFromRow(row) {
+    function getDirectReviewButtonFromRow(row) {
         return [...row.querySelectorAll("button")]
-            .find(b => cleanText(b.innerText) === "Review" && isVisible(b));
+            .find(b => cleanText(b.innerText) === DIRECT_REVIEW_ROW_ACTION && isVisible(b));
+    }
+
+    function getMatchButtonFromRow(row) {
+        return [...row.querySelectorAll("button")]
+            .find(b => cleanText(b.innerText) === MATCH_ROW_ACTION && isVisible(b));
+    }
+
+    function getReviewMenuButtonFromRow(row) {
+        return [...row.querySelectorAll("button")]
+            .find(b => cleanText(b.innerText) === "" && b.getAttribute("aria-label") === "Expand Menu" && isVisible(b));
     }
 
     function getLiveReviewRows() {
         return [...document.querySelectorAll("table tr")]
             .map(row => {
-                const reviewButton = getReviewButtonFromRow(row);
-                if (!reviewButton) return null;
+                const directReviewButton = getDirectReviewButtonFromRow(row);
+                const matchButton = getMatchButtonFromRow(row);
+                const reviewMenuButton = matchButton ? getReviewMenuButtonFromRow(row) : null;
+
+                if (!directReviewButton && !reviewMenuButton) return null;
 
                 return {
                     row,
-                    reviewButton,
+                    directReviewButton,
+                    reviewMenuButton,
+                    action: directReviewButton ? DIRECT_REVIEW_ROW_ACTION : "Review from menu",
                     key: getRowKeyFromRow(row),
                     top: row.getBoundingClientRect().top,
                 };
@@ -293,6 +326,7 @@
         STATE.reviewQueue = getLiveReviewRows().map(item => ({
             key: item.key,
             text: cleanText(item.row.innerText),
+            action: item.action,
         }));
 
         STATE.reviewIndex = 0;
@@ -367,28 +401,123 @@
         }));
     }
 
-    async function typeAndMoveNext(el, value) {
-        if (!el) return false;
+    function keyCombo(el, keyName, code = keyName) {
+        if (!el) return;
 
-        el.scrollIntoView({ block: "center" });
-        el.focus();
-        await sleep(150);
+        for (const type of ["keydown", "keypress", "keyup"]) {
+            el.dispatchEvent(new KeyboardEvent(type, {
+                key: keyName,
+                code,
+                bubbles: true,
+                cancelable: true,
+            }));
+        }
+    }
 
-        setNativeValue(el, "");
-        await sleep(150);
+    function getDropdownMenuForInput(input) {
+        const menuId = input?.getAttribute("aria-controls");
+        return menuId ? document.getElementById(menuId) : null;
+    }
 
-        for (const char of String(value)) {
-            setNativeValue(el, el.value + char);
-            await sleep(35);
+    function getVisibleDropdownOptions(input) {
+        const menu = getDropdownMenuForInput(input);
+        const scope = menu && isVisible(menu) ? menu : document;
+
+        return [...scope.querySelectorAll(
+            '[role="option"], [role="menuitem"], .menu-item-label, li, button'
+        )].filter(isVisible);
+    }
+
+    function isCreateOptionText(text) {
+        return (
+            text === "add" ||
+            text === "create" ||
+            text === "new" ||
+            text.startsWith("add ") ||
+            text.startsWith("create ") ||
+            text.startsWith("+ ") ||
+            text.includes("add new") ||
+            text.includes("create new")
+        );
+    }
+
+    function optionTextMatches(text, value) {
+        const wanted = normalise(value);
+
+        if (text === wanted || text.includes(wanted) || wanted.includes(text)) {
+            return true;
         }
 
-        await sleep(300);
-        key(el, "Enter");
-        await sleep(250);
-        key(el, "Tab");
+        const wantedTokens = wanted
+            .split(/[^a-z0-9]+/)
+            .filter(token => token.length > 1);
+
+        return wantedTokens.length > 1 && wantedTokens.every(token => text.includes(token));
+    }
+
+    function findVisibleDropdownOption(input, value) {
+        return getVisibleDropdownOptions(input).find(el => {
+            const text = normalise(el.innerText || el.textContent);
+            if (!text) return false;
+
+            if (isCreateOptionText(text)) return false;
+
+            return optionTextMatches(text, value);
+        });
+    }
+
+    async function fillDropdownValue(input, value, label) {
+        if (!input) return false;
+
+        console.log(`[QBO Bot] Filling ${label}:`, value);
+
+        input.scrollIntoView({ block: "center" });
+        await realClick(input);
+        input.focus();
         await sleep(200);
 
+        setNativeValue(input, "");
+        await sleep(150);
+        setNativeValue(input, value);
+        keyCombo(input, "ArrowDown");
+        await sleep(900);
+
+        const option = findVisibleDropdownOption(input, value);
+
+        if (!option) {
+            const menu = getDropdownMenuForInput(input);
+
+            console.warn(`[QBO Bot] ${label} option not found:`, {
+                value,
+                expanded: input.getAttribute("aria-expanded"),
+                menuId: input.getAttribute("aria-controls"),
+                menuVisible: isVisible(menu),
+                visibleOptions: getVisibleDropdownOptions(input)
+                    .map(el => cleanText(el.innerText || el.textContent))
+                    .filter(Boolean)
+                    .slice(0, 10),
+            });
+            return false;
+        }
+
+        const clickable =
+            option.closest('[role="option"]') ||
+            option.closest('[role="menuitem"]') ||
+            option.closest("button") ||
+            option.closest("li") ||
+            option;
+
+        await realClick(clickable);
+        await sleep(500);
+
+        key(input, "Tab");
+        await sleep(300);
+
         return true;
+    }
+
+    async function typeAndMoveNext(el, value) {
+        return fillDropdownValue(el, value, el?.getAttribute("aria-label") || "dropdown");
     }
 
     async function realClick(el) {
@@ -418,57 +547,7 @@
     async function fillPayee(value, form) {
         if (!value || !form.fields.payee) return true;
 
-        console.log("[QBO Bot] Filling payee:", value);
-
-        const input = form.fields.payee;
-        input.scrollIntoView({ block: "center" });
-        input.focus();
-        await sleep(200);
-
-        setNativeValue(input, "");
-        await sleep(200);
-
-        setNativeValue(input, value);
-        await sleep(900);
-
-        const wanted = normalise(value);
-
-        const option = [...document.querySelectorAll(
-            '[role="option"], [role="menuitem"], .menu-item-label, li, button'
-        )].find(el => {
-            const text = normalise(el.innerText || el.textContent);
-            if (!text) return false;
-
-            if (
-                text.includes("add") ||
-                text.includes("create") ||
-                text.includes("new")
-            ) {
-                return false;
-            }
-
-            return text === wanted || text.includes(wanted) || wanted.includes(text);
-        });
-
-        if (!option) {
-            console.warn("[QBO Bot] Existing payee option not found:", value);
-            return false;
-        }
-
-        const clickable =
-            option.closest('[role="option"]') ||
-            option.closest('[role="menuitem"]') ||
-            option.closest("button") ||
-            option.closest("li") ||
-            option;
-
-        await realClick(clickable);
-        await sleep(500);
-
-        key(input, "Tab");
-        await sleep(300);
-
-        return true;
+        return fillDropdownValue(form.fields.payee, value, "payee");
     }
 
     async function fillTaxType(value) {
@@ -483,32 +562,37 @@
         }
 
         taxInput.scrollIntoView({ block: "center" });
+        await realClick(taxInput);
         taxInput.focus();
         await sleep(200);
 
         const viewChoices = [...document.querySelectorAll("button")]
-            .find(b => cleanText(b.innerText) === "View Choices");
+            .find(b => cleanText(b.innerText) === "View Choices" && isVisible(b));
 
         if (viewChoices) {
-            viewChoices.click();
-            await sleep(200);
+            await realClick(viewChoices);
+            await sleep(300);
         }
 
-        const wanted = normalise(value);
-
-        const label = [...document.querySelectorAll(".menu-item-label")]
-            .find(el => {
-                const text = normalise(el.innerText);
-                return text === wanted || text.includes(wanted) || wanted.includes(text);
-            });
+        const label = [...document.querySelectorAll(".menu-item-label, [role='option'], [role='menuitem']")]
+            .filter(isVisible)
+            .find(el => optionTextMatches(normalise(el.innerText || el.textContent), value));
 
         if (!label) {
-            console.warn("[QBO Bot] Tax menu label not found:", value);
+            console.warn("[QBO Bot] Tax menu label not found:", {
+                value,
+                visibleOptions: [...document.querySelectorAll(".menu-item-label, [role='option'], [role='menuitem']")]
+                    .filter(isVisible)
+                    .map(el => cleanText(el.innerText || el.textContent))
+                    .filter(Boolean)
+                    .slice(0, 10),
+            });
             return false;
         }
 
         const clickable =
             label.closest('[role="menuitem"]') ||
+            label.closest('[role="option"]') ||
             label.closest("button") ||
             label.closest("li") ||
             label.parentElement ||
@@ -703,8 +787,58 @@
             .find(b => cleanText(b.innerText) === "Save and next");
     }
 
+    function getCreateExpenseButton() {
+        const payeeField = document.querySelector('input[aria-label="Select a payee (optional)"]');
+        const payeeRect = payeeField?.getBoundingClientRect();
+        const formRight = payeeRect ? payeeRect.right + 40 : window.innerWidth;
+
+        return [...document.querySelectorAll("button")]
+            .find(b => {
+                const rect = b.getBoundingClientRect();
+                return (
+                    cleanText(b.innerText) === "Create expense" &&
+                    isVisible(b) &&
+                    rect.left <= formRight
+                );
+            });
+    }
+
+    function getSubmitButton(decision) {
+        return decision.submitAction === "createExpense"
+            ? getCreateExpenseButton()
+            : getSaveAndNextButton();
+    }
+
     function getCloseButton() {
         return document.querySelector('button[aria-label="Close"]');
+    }
+
+    function isFormOpen() {
+        return !!document.querySelector('input[aria-label="Select a payee (optional)"]');
+    }
+
+    async function openReviewFromRowMenu(row, menuButton) {
+        await realClick(menuButton);
+        await sleep(500);
+
+        const menuItems = [...document.querySelectorAll('[role="menuitem"]')]
+            .filter(isVisible);
+        const reviewButton = menuItems
+            .find(el => cleanText(el.innerText || el.textContent) === DIRECT_REVIEW_ROW_ACTION && isVisible(el));
+
+        if (!reviewButton) {
+            console.warn("[QBO Bot] Review menu item not found for Match row.", {
+                rowKey: getRowKeyFromRow(row),
+                visibleMenuItems: menuItems
+                    .map(el => cleanText(el.innerText || el.textContent))
+                    .filter(Boolean)
+                    .slice(0, 20),
+            });
+            return false;
+        }
+
+        await realClick(reviewButton);
+        return true;
     }
 
     async function openNextReview() {
@@ -717,14 +851,21 @@
         console.log("[QBO Bot] Opening live matched row:", {
             index: STATE.reviewIndex,
             key: STATE.currentRowKey,
+            action: next.action,
         });
 
-        next.reviewButton.scrollIntoView({ block: "center" });
+        const openButton = next.directReviewButton || next.reviewMenuButton;
+        openButton.scrollIntoView({ block: "center" });
         await sleep(500);
 
-        next.reviewButton.click();
-        await sleep(2500);
+        if (next.directReviewButton) {
+            await realClick(next.directReviewButton);
+        } else {
+            const openedFromMenu = await openReviewFromRowMenu(next.row, next.reviewMenuButton);
+            if (!openedFromMenu) return false;
+        }
 
+        await sleep(2500);
         return true;
     }
 
@@ -889,23 +1030,25 @@ Failed: ${summary.failed}`;
                     break;
                 }
 
-                const saveBtn = getSaveAndNextButton();
+                const submitBtn = getSubmitButton(decision);
 
-                if (!saveBtn) {
+                if (!submitBtn) {
                     STATE.failed++;
 
                     if (STATE.currentRowKey) {
                         STATE.skippedRowKeys.add(STATE.currentRowKey);
                     }
 
-                    console.warn("[QBO Bot] Save and next not found. Skipping row. Not clicking Create expense.");
+                    console.warn("[QBO Bot] Submit button not found. Skipping row.", {
+                        submitAction: decision.submitAction || "saveAndNext",
+                    });
 
                     await closeFormWithCancel();
                     STATE.currentRowKey = null;
                     continue;
                 }
 
-                saveBtn.click();
+                submitBtn.click();
                 STATE.processed++;
 
                 if (STATE.currentRowKey) {

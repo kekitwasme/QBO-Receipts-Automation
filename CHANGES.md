@@ -1,5 +1,30 @@
 # Changes Summary
 
+## v1.10 → v1.12
+
+- Corrected Match-row handling: the bot no longer clicks the `Match` button.
+- Match rows are queued by their row dropdown and opened by selecting the dropdown `Review` menu item.
+- Updated the userscript header version to `1.12`.
+
+## v1.9 → v1.10
+
+- The review queue now opens rows whose action button is `Review` or `Match`.
+- Rows whose only action is `Create expense` remain skipped by the queue.
+- Updated the userscript header version to `1.10`.
+
+## v1.8 → v1.9
+
+- Added a dedicated `china_dragon_trading` payee rule.
+- China Dragon Trading fills as a food supplier, then uses the form-panel `Create expense` button instead of `Save and next`.
+- Updated the userscript header version to `1.9`.
+
+## v1.7 → v1.8
+
+- Fixed dropdown matching so payees such as `New West Foods` are not rejected as create-new options.
+- Reused the dropdown option selection path for payee, bank, and category fields.
+- Added clearer dropdown diagnostics when an expected option is not visible.
+- Updated the userscript header version to `1.8`.
+
 ## v1.6 → v1.7
 
 - Description filling now uses the matched rule payee name for `"fill"` decisions.
