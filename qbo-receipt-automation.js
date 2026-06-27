@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         QBO Receipt Automation - Stable Queue
 // @namespace    qbo-receipt-automation
-// @version      1.12
+// @version      1.15
 // @description  QBO receipt automation with stable review queue, payee aliases, auto-clear state, draggable control panel, payee-to-description, and run completion notification
 // @match        https://qbo.intuit.com/app/receipts*
 // @grant        none
@@ -68,7 +68,7 @@
                     category: CONFIG.categories.food,
                     taxType: tax ? CONFIG.tax.gst : CONFIG.tax.gstFree,
                     taxAmount: tax ? undefined : "0.00",
-                    submitAction: "createExpense",
+                    afterSaveAction: "createExpense",
                 }),
             },
 
@@ -228,9 +228,12 @@
         skippedRowKeys: new Set(),
         processedRowKeys: new Set(),
         currentRowKey: null,
+        currentRow: null,
+        currentRowText: "",
         processed: 0,
         skipped: 0,
         failed: 0,
+        wakeLock: null,
     };
 
     const DIRECT_REVIEW_ROW_ACTION = "Review";
@@ -242,11 +245,49 @@
         STATE.skippedRowKeys.clear();
         STATE.processedRowKeys.clear();
         STATE.currentRowKey = null;
+        STATE.currentRow = null;
+        STATE.currentRowText = "";
         STATE.processed = 0;
         STATE.skipped = 0;
         STATE.failed = 0;
         console.warn("[QBO Bot] State fully cleared.");
     }
+
+    async function requestScreenWakeLock() {
+        if (!("wakeLock" in navigator)) {
+            console.warn("[QBO Bot] Screen Wake Lock API is not available in this browser.");
+            return false;
+        }
+
+        if (STATE.wakeLock) return true;
+
+        try {
+            STATE.wakeLock = await navigator.wakeLock.request("screen");
+            STATE.wakeLock.addEventListener("release", () => {
+                STATE.wakeLock = null;
+                console.warn("[QBO Bot] Screen wake lock released.");
+            });
+            console.log("[QBO Bot] Screen wake lock active.");
+            return true;
+        } catch (err) {
+            console.warn("[QBO Bot] Screen wake lock request failed:", err);
+            return false;
+        }
+    }
+
+    async function releaseScreenWakeLock() {
+        if (!STATE.wakeLock) return;
+
+        const wakeLock = STATE.wakeLock;
+        STATE.wakeLock = null;
+        await wakeLock.release();
+    }
+
+    document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible" && STATE.running && !STATE.wakeLock) {
+            requestScreenWakeLock();
+        }
+    });
 
     function cleanText(v) {
         return String(v || "").replace(/\s+/g, " ").trim();
@@ -720,6 +761,34 @@
         await sleep(1000);
     }
 
+    function formatSkipMemoReason(decision) {
+        return `[QBO Bot] Skipped because: ${decision.reason || "unspecified reason"}.`;
+    }
+
+    async function writeSkipReasonToMemo(decision, form) {
+        const memoField = form.fields.memo;
+        if (!memoField) return false;
+
+        const skipMemo = formatSkipMemoReason(decision);
+        const existingMemo = cleanText(memoField.value);
+        const nextMemo = existingMemo
+            ? `${existingMemo}\n${skipMemo}`
+            : skipMemo;
+
+        if (existingMemo.includes(skipMemo)) return true;
+
+        memoField.scrollIntoView({ block: "center" });
+        memoField.focus();
+        await sleep(150);
+        setNativeValue(memoField, nextMemo);
+        await sleep(200);
+        key(memoField, "Tab");
+        await sleep(300);
+
+        console.log("[QBO Bot] Skip reason written to memo:", skipMemo);
+        return true;
+    }
+
     async function fillForm(decision, form) {
         const okPayee = await fillPayee(decision.payee, form);
 
@@ -787,28 +856,6 @@
             .find(b => cleanText(b.innerText) === "Save and next");
     }
 
-    function getCreateExpenseButton() {
-        const payeeField = document.querySelector('input[aria-label="Select a payee (optional)"]');
-        const payeeRect = payeeField?.getBoundingClientRect();
-        const formRight = payeeRect ? payeeRect.right + 40 : window.innerWidth;
-
-        return [...document.querySelectorAll("button")]
-            .find(b => {
-                const rect = b.getBoundingClientRect();
-                return (
-                    cleanText(b.innerText) === "Create expense" &&
-                    isVisible(b) &&
-                    rect.left <= formRight
-                );
-            });
-    }
-
-    function getSubmitButton(decision) {
-        return decision.submitAction === "createExpense"
-            ? getCreateExpenseButton()
-            : getSaveAndNextButton();
-    }
-
     function getCloseButton() {
         return document.querySelector('button[aria-label="Close"]');
     }
@@ -847,6 +894,8 @@
         if (!next) return false;
 
         STATE.currentRowKey = next.key;
+        STATE.currentRow = next.row;
+        STATE.currentRowText = next.text || next.key;
 
         console.log("[QBO Bot] Opening live matched row:", {
             index: STATE.reviewIndex,
@@ -866,6 +915,67 @@
         }
 
         await sleep(2500);
+        return true;
+    }
+
+    function getCurrentRowReceiptMarkers() {
+        const text = STATE.currentRowText || STATE.currentRowKey || "";
+        return {
+            date: text.match(/\b\d{2}\/\d{2}\/\d{4}\b/)?.[0],
+            amount: text.match(/A\$[\d,.]+/)?.[0],
+        };
+    }
+
+    function getCreateExpenseButtonFromCurrentReceipt() {
+        if (STATE.currentRow?.isConnected) {
+            const currentRowButton = [...STATE.currentRow.querySelectorAll("button")]
+                .find(b => cleanText(b.innerText) === "Create expense" && isVisible(b));
+
+            if (currentRowButton) return currentRowButton;
+        }
+
+        const { date, amount } = getCurrentRowReceiptMarkers();
+
+        if (!date || !amount) return null;
+
+        const row = [...document.querySelectorAll("table tr")]
+            .find(candidate => {
+                const text = cleanText(candidate.innerText);
+                return text.includes(date) && text.includes(amount);
+            });
+
+        return row
+            ? [...row.querySelectorAll("button")]
+                .find(b => cleanText(b.innerText) === "Create expense" && isVisible(b))
+            : null;
+    }
+
+    async function waitForFormClosed() {
+        for (let i = 0; i < 20; i++) {
+            if (!isFormOpen()) return true;
+            await sleep(250);
+        }
+
+        return !isFormOpen();
+    }
+
+    async function runAfterSaveAction(decision) {
+        if (decision.afterSaveAction !== "createExpense") return true;
+
+        await waitForFormClosed();
+
+        const createExpenseButton = getCreateExpenseButtonFromCurrentReceipt();
+
+        if (!createExpenseButton) {
+            console.warn("[QBO Bot] Create expense button not found after Save and next.", {
+                rowKey: STATE.currentRowKey,
+            });
+            return false;
+        }
+
+        await realClick(createExpenseButton);
+        await sleep(1500);
+        console.log("[QBO Bot] Create expense clicked after Save and next.");
         return true;
     }
 
@@ -964,6 +1074,7 @@ Failed: ${summary.failed}`;
         }
 
         STATE.running = true;
+        await requestScreenWakeLock();
 
         try {
             while (STATE.running) {
@@ -996,8 +1107,11 @@ Failed: ${summary.failed}`;
 
                     console.warn("[QBO Bot] Skipped:", decision.reason);
 
+                    await writeSkipReasonToMemo(decision, form);
                     await closeFormWithCancel();
                     STATE.currentRowKey = null;
+                    STATE.currentRow = null;
+                    STATE.currentRowText = "";
                     continue;
                 }
 
@@ -1022,6 +1136,8 @@ Failed: ${summary.failed}`;
 
                     await closeFormWithCancel();
                     STATE.currentRowKey = null;
+                    STATE.currentRow = null;
+                    STATE.currentRowText = "";
                     continue;
                 }
 
@@ -1030,7 +1146,7 @@ Failed: ${summary.failed}`;
                     break;
                 }
 
-                const submitBtn = getSubmitButton(decision);
+                const submitBtn = getSaveAndNextButton();
 
                 if (!submitBtn) {
                     STATE.failed++;
@@ -1040,15 +1156,35 @@ Failed: ${summary.failed}`;
                     }
 
                     console.warn("[QBO Bot] Submit button not found. Skipping row.", {
-                        submitAction: decision.submitAction || "saveAndNext",
+                        submitAction: "saveAndNext",
                     });
 
                     await closeFormWithCancel();
                     STATE.currentRowKey = null;
+                    STATE.currentRow = null;
+                    STATE.currentRowText = "";
                     continue;
                 }
 
-                submitBtn.click();
+                await realClick(submitBtn);
+                await sleep(1800);
+
+                const afterSaveOk = await runAfterSaveAction(decision);
+
+                if (!afterSaveOk) {
+                    STATE.failed++;
+
+                    if (STATE.currentRowKey) {
+                        STATE.skippedRowKeys.add(STATE.currentRowKey);
+                    }
+
+                    await closeFormWithCancel();
+                    STATE.currentRowKey = null;
+                    STATE.currentRow = null;
+                    STATE.currentRowText = "";
+                    continue;
+                }
+
                 STATE.processed++;
 
                 if (STATE.currentRowKey) {
@@ -1056,13 +1192,18 @@ Failed: ${summary.failed}`;
                 }
 
                 STATE.currentRowKey = null;
+                STATE.currentRow = null;
+                STATE.currentRowText = "";
 
-                await sleep(1800);
-                await closeFormWithCancel();
+                if (!decision.afterSaveAction) {
+                    await closeFormWithCancel();
+                }
+
                 await sleep(1000);
             }
         } finally {
             STATE.running = false;
+            await releaseScreenWakeLock();
 
             console.log("[QBO Bot] Finished:", {
                 processed: STATE.processed,

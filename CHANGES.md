@@ -1,5 +1,23 @@
 # Changes Summary
 
+## v1.14 → v1.15
+
+- China Dragon Trading now submits with `Save and next` first, then clicks the same receipt row's `Create expense` action.
+- Removed the incorrect direct `Create expense` form submit path for China Dragon rows.
+- Updated the userscript header version to `1.15`.
+
+## v1.13 → v1.14
+
+- The bot now requests a screen wake lock while automation is running to help keep the display on.
+- The wake lock is released when the run finishes or stops, and reacquired if the page becomes visible again during a run.
+- Updated the userscript header version to `1.14`.
+
+## v1.12 → v1.13
+
+- Skip decisions now write `[QBO Bot] Skipped because: <reason>.` to the memo field before closing the form.
+- Existing memo text is preserved and the skip reason is appended once.
+- Updated the userscript header version to `1.13`.
+
 ## v1.10 → v1.12
 
 - Corrected Match-row handling: the bot no longer clicks the `Match` button.
